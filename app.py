@@ -1,147 +1,216 @@
-# # app.py
-# import streamlit as st
-# from PIL import Image, ImageOps
-# import numpy as np
-# import tensorflow as tf
-# import json
-# import os
-# import io
-# import cv2
-
-# MODEL_PATH = "model/asl_lstm_model.h5"
-# LABEL_MAP_PATH = "model/label_map.json"
-
-# st.set_page_config(page_title="ASL LSTM Interpreter", layout="centered")
-
-# st.title("Sign Language Interpreter (Image → Letter)")
-# st.write("Upload a 28×28 or larger image of a single hand sign (ASL static alphabet). Model expects the Sign Language MNIST style signs (A–Y; J and Z are motion-based and typically not included).")
-
-# # Load model & label map once
-# @st.cache_resource
-# def load_model_and_map():
-#     if not os.path.exists(MODEL_PATH):
-#         st.error(f"Model file not found at {MODEL_PATH}. Please train the model first using train.py.")
-#         return None, None
-#     model = tf.keras.models.load_model(MODEL_PATH)
-#     with open(LABEL_MAP_PATH, "r") as f:
-#         label_map = json.load(f)
-#     return model, label_map
-
-# model, label_map = load_model_and_map()
-# if model is None:
-#     st.stop()
-
-# st.sidebar.header("Options")
-# show_example = st.sidebar.checkbox("Show random test example from dataset (if available)", value=False)
-
-# uploaded_file = st.file_uploader("Upload an image (PNG/JPG). For best results, upload 28x28 grayscale images like in the dataset.", type=["png","jpg","jpeg"])
-
-# def preprocess_image_pil(pil_img):
-#     """
-#     Convert uploaded image to 28x28 grayscale, normalize and return shape (1,28,28)
-#     """
-#     # convert RGBA or RGB to grayscale
-#     img = pil_img.convert("L")  # grayscale
-#     # Option: crop to center square first
-#     w, h = img.size
-#     min_dim = min(w, h)
-#     left = (w - min_dim) // 2
-#     top = (h - min_dim) // 2
-#     img = img.crop((left, top, left + min_dim, top + min_dim))
-#     img = img.resize((28, 28), Image.ANTIALIAS)
-#     arr = np.array(img).astype(np.float32)
-#     arr = arr / 255.0
-#     # In dataset, background may be white and hand dark. If your uploaded image is inverted, predictions will fail.
-#     # Optionally invert if background dark (simple heuristic)
-#     # If mean pixel is >0.6 assume background is white (dataset-like), else invert if necessary — keep heuristic simple
-#     if arr.mean() < 0.4:
-#         # background dark, invert to match dataset where background is light
-#         arr = 1.0 - arr
-#     # reshape to (1, 28, 28)
-#     return arr.reshape(1, 28, 28)
-
-# def predict_from_array(arr):
-#     preds = model.predict(arr)
-#     idx = np.argmax(preds, axis=1)[0]
-#     prob = preds[0, idx]
-#     # decode label
-#     # class_to_letter mapping maps dataset numeric class to a letter
-#     c2l = label_map.get("class_to_letter", {})
-#     # if label_map uses class numbers as strings, convert:
-#     letter = c2l.get(str(idx), c2l.get(int(idx), str(idx)))
-#     return idx, letter, float(prob)
-
-# if uploaded_file is not None:
-#     image = Image.open(uploaded_file)
-#     st.image(image, caption="Uploaded image", width=240)
-#     arr = preprocess_image_pil(image)
-#     idx, letter, prob = predict_from_array(arr)
-#     st.markdown(f"**Prediction:** {letter} (class index {idx})")
-#     st.markdown(f"**Confidence:** {prob*100:.2f}%")
-
-#     st.write("You can try a few different images or adjust lighting/background to match dataset style (light background, hand sign centered).")
-
-# # Optional: show an example image from the CSV dataset
-# if show_example:
-#     import pandas as pd
-#     csv_path = os.path.join("data", "sign_mnist_test.csv")
-#     if os.path.exists(csv_path):
-#         df = pd.read_csv(csv_path)
-#         sample = df.sample(1).iloc[0]
-#         label = int(sample['label'])
-#         pixels = sample.drop('label').values.reshape(28,28).astype(np.uint8)
-#         st.write(f"Example from dataset — class {label}, mapped to letter: {label_map.get('class_to_letter',{}).get(str(label), label)}")
-#         st.image(pixels, width=200, clamp=True, channels="L")
-#     else:
-#         st.info("No dataset CSV found in data/. Put sign_mnist_test.csv into data/ if you want to preview examples.")
-
-
-import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
 import cv2
 import mediapipe as mp
 import numpy as np
 import tensorflow as tf
 import json
+import os
+import time
 
-# Load model and label map
+# Configuration
 MODEL_PATH = "model/asl_lstm_model.h5"
 LABEL_MAP_PATH = "model/label_map.json"
 
-model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-with open(LABEL_MAP_PATH, "r") as f:
-    label_map = json.load(f)
-class_to_letter = label_map.get("class_to_letter", {})
+st.set_page_config(page_title="ASL Camera Interpreter", layout="wide")
+st.title("ASL Sign Language Interpreter")
 
-mp_hands = mp.solutions.hands
-
-class HandSignTransformer(VideoTransformerBase):
-    def __init__(self):
-        self.hands = mp_hands.Hands(static_image_mode=False,
-                                    max_num_hands=1,
-                                    min_detection_confidence=0.5)
+@st.cache_resource
+def load_model_and_map():
+    """Load the trained model and label mapping"""
+    if not os.path.exists(MODEL_PATH):
+        return None, None
     
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        result = self.hands.process(img_rgb)
+    try:
+        model = tf.keras.models.load_model(MODEL_PATH)
+        with open(LABEL_MAP_PATH, "r") as f:
+            label_map = json.load(f)
+        return model, label_map
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None, None
 
-        if result.multi_hand_landmarks:
-            # take first hand
-            landmarks = result.multi_hand_landmarks[0]
-            # flatten into 63-d vector (x,y,z for 21 landmarks)
-            landmark_array = np.array([[lm.x, lm.y, lm.z] for lm in landmarks.landmark]).flatten()
-            # reshape to model input shape: (1,63) or (1, timesteps, features) depending on your model
-            input_data = landmark_array.reshape(1, -1)
-            preds = model.predict(input_data)
-            idx = int(np.argmax(preds))
-            letter = class_to_letter.get(str(idx), str(idx))
-            confidence = float(preds[0, idx])
-            cv2.putText(img, f"{letter} ({confidence*100:.1f}%)",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                        1, (0,255,0), 2, cv2.LINE_AA)
-        return img
+def preprocess_hand_region(hand_roi):
+    """Preprocess hand region to match training data format"""
+    # Convert to grayscale if needed
+    if len(hand_roi.shape) == 3:
+        gray = cv2.cvtColor(hand_roi, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = hand_roi
+    
+    # Resize to 28x28
+    resized = cv2.resize(gray, (28, 28))
+    
+    # Normalize to 0-1
+    normalized = resized.astype(np.float32) / 255.0
+    
+    # Check if background is dark and invert if needed
+    if normalized.mean() < 0.4:
+        normalized = 1.0 - normalized
+    
+    # Reshape for model input
+    return normalized.reshape(1, 28, 28)
 
-st.title("Real-Time Sign Language Interpreter (Webcam)")
+def capture_and_predict():
+    """Capture image and make prediction"""
+    # Initialize MediaPipe
+    mp_hands = mp.solutions.hands
+    mp_draw = mp.solutions.drawing_utils
+    
+    # Initialize camera
+    cap = cv2.VideoCapture(0)
+    
+    if not cap.isOpened():
+        st.error("❌ Cannot access camera. Please check permissions.")
+        return
+    
+    # Model loading
+    model, label_map = load_model_and_map()
+    if model is None:
+        st.error("❌ Model not found. Please train the model first.")
+        cap.release()
+        return
+    
+    class_to_letter = label_map.get("class_to_letter", {})
+    
+    # Streamlit layout
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        image_placeholder = st.empty()
+        # Add stop button
+        if st.button("🛑 Stop Camera", type="secondary", key="stop_btn"):
+            st.session_state.stop_camera = True
+    
+    with col2:
+        prediction_placeholder = st.empty()
+        confidence_placeholder = st.empty()
+        
+        st.markdown("### Instructions:")
+        st.markdown("- Position your hand in the camera view")
+        st.markdown("- Make clear ASL letter signs")
+        st.markdown("- Keep good lighting")
+        st.markdown("- Letters A-Y supported (no J)")
+        st.markdown("- Click **Stop Camera** to stop")
+        
+        if st.button("📸 Capture & Predict", type="primary"):
+            st.session_state.capture_now = True
+    
+    # Initialize hands detector
+    with mp_hands.Hands(
+        static_image_mode=False,
+        max_num_hands=1,
+        min_detection_confidence=0.7,
+        min_tracking_confidence=0.5
+    ) as hands:
+        
+        frame_count = 0
+        last_prediction = None
+        last_confidence = 0.0
+        
+        # Main camera loop
+        while True:
+            # Check for stop signal
+            if st.session_state.get('stop_camera', False):
+                st.session_state.stop_camera = False
+                st.success("📹 Camera stopped!")
+                break
+                
+            ret, frame = cap.read()
+            if not ret:
+                st.error("Failed to read from camera")
+                break
+            
+            # Flip frame horizontally
+            frame = cv2.flip(frame, 1)
+            h, w, _ = frame.shape
+            
+            # Convert BGR to RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = hands.process(rgb_frame)
+            
+            # Draw hand landmarks and bounding box
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    # Draw landmarks
+                    mp_draw.draw_landmarks(
+                        frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                    
+                    # Get bounding box
+                    x_coords = [landmark.x * w for landmark in hand_landmarks.landmark]
+                    y_coords = [landmark.y * h for landmark in hand_landmarks.landmark]
+                    
+                    x_min, x_max = int(min(x_coords) - 20), int(max(x_coords) + 20)
+                    y_min, y_max = int(min(y_coords) - 20), int(max(y_coords) + 20)
+                    
+                    # Ensure bounds are within frame
+                    x_min, y_min = max(0, x_min), max(0, y_min)
+                    x_max, y_max = min(w, x_max), min(h, y_max)
+                    
+                    # Draw bounding box
+                    cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+                    
+                    # Extract and predict every 10 frames or on capture button
+                    if frame_count % 10 == 0 or st.session_state.get('capture_now', False):
+                        if st.session_state.get('capture_now', False):
+                            st.session_state.capture_now = False
+                        
+                        # Extract hand region
+                        hand_roi = frame[y_min:y_max, x_min:x_max]
+                        
+                        if hand_roi.size > 0:
+                            try:
+                                # Preprocess
+                                processed_hand = preprocess_hand_region(hand_roi)
+                                
+                                # Predict
+                                predictions = model.predict(processed_hand, verbose=0)
+                                predicted_class = np.argmax(predictions[0])
+                                confidence = predictions[0][predicted_class]
+                                letter = class_to_letter.get(str(predicted_class), str(predicted_class))
+                                
+                                last_prediction = letter
+                                last_confidence = confidence
+                                
+                            except Exception as e:
+                                last_prediction = "Error"
+                                last_confidence = 0.0
+                    
+                    # Display current prediction on frame
+                    if last_prediction:
+                        cv2.putText(frame, f"Letter: {last_prediction}", 
+                                  (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        cv2.putText(frame, f"Confidence: {last_confidence*100:.1f}%", 
+                                  (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            else:
+                cv2.putText(frame, "Show your hand to the camera", 
+                          (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            
+            # Convert back to RGB for Streamlit
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Update Streamlit display
+            with image_placeholder:
+                st.image(frame_rgb, caption="Camera Feed", use_container_width=True)
+            
+            if last_prediction:
+                with prediction_placeholder:
+                    st.metric("Predicted Letter", last_prediction)
+                with confidence_placeholder:
+                    st.metric("Confidence", f"{last_confidence*100:.1f}%")
+            
+            frame_count += 1
+            
+            # Check if we should stop (this is a simplified check)
+            # In a real app, you'd want a proper stop mechanism
+            time.sleep(0.1)
+    
+    cap.release()
 
-webrtc_streamer(key="hand-sign", video_processor_factory=HandSignTransformer)
+# Initialize session state
+if 'stop_camera' not in st.session_state:
+    st.session_state.stop_camera = False
+
+# Run the app
+if __name__ == "__main__":
+    if st.button("🎥 Start Camera", type="primary"):
+        capture_and_predict()
