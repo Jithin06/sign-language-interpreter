@@ -5,6 +5,7 @@ import tensorflow as tf
 import json
 import os
 import time
+import streamlit as st
 
 # Configuration
 MODEL_PATH = "model/asl_lstm_model.h5"
@@ -36,10 +37,10 @@ def preprocess_hand_region(hand_roi):
     else:
         gray = hand_roi
     
-    # Resize to 28x28
+    # Resize 
     resized = cv2.resize(gray, (28, 28))
     
-    # Normalize to 0-1
+    # Normalize 
     normalized = resized.astype(np.float32) / 255.0
     
     # Check if background is dark and invert if needed
@@ -76,7 +77,6 @@ def capture_and_predict():
     
     with col1:
         image_placeholder = st.empty()
-        # Add stop button
         if st.button("🛑 Stop Camera", type="secondary", key="stop_btn"):
             st.session_state.stop_camera = True
     
@@ -108,7 +108,6 @@ def capture_and_predict():
         
         # Main camera loop
         while True:
-            # Check for stop signal
             if st.session_state.get('stop_camera', False):
                 st.session_state.stop_camera = False
                 st.success("📹 Camera stopped!")
@@ -200,8 +199,6 @@ def capture_and_predict():
             
             frame_count += 1
             
-            # Check if we should stop (this is a simplified check)
-            # In a real app, you'd want a proper stop mechanism
             time.sleep(0.1)
     
     cap.release()
