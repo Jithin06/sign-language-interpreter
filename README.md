@@ -47,25 +47,6 @@ streamlit run app.py
 ### 5. Access the App
 After you run locally, open your browser and navigate to `http://localhost:8501`
 
-## 🎯 Tips to use
-
-### Hand Positioning
-- Keep your hand centered in the green bounding box
-- Ensure good contrast between hand and background
-- Maintain steady hand position for 1-2 seconds
-
-## 🧠 Model Training
-
-The LSTM model is trained on the Sign Language MNIST dataset:
-
-### Training Process
-1. **Data Preprocessing**: 28×28 grayscale images normalized to 0-1
-2. **Sequence Conversion**: Images reshaped to (28, 28) sequences
-3. **Architecture**: 
-   - LSTM layers with 128 and 64 units
-   - Batch normalization and dropout for regularization
-   - Dense output layer with softmax activation
-4. **Training**: Categorical crossentropy loss with Adam optimizer
 
 ### To Train Your Own Model
 ```bash
